@@ -1,1 +1,1 @@
-修改kernal/strap.c
+# 修改kernal/strap.c
