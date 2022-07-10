@@ -22,19 +22,17 @@
 extern char smode_trap_vector[];
 extern void return_to_user(trapframe *, uint64 satp);
 
-//
 // trap_sec_start points to the beginning of S-mode trap segment (i.e., the entry point
 // of S-mode trap vector).
-//
 extern char trap_sec_start[];
+
+// process pool. added @lab3_1
+process procs[NPROC];
 
 // current points to the currently running user-mode application.
 process* current = NULL;
 
-// process pool
-process procs[NPROC];
-
-// start virtual address of our simple heap.
+// points to the first free page in our simple heap. added @lab2_2
 uint64 g_ufree_page = USER_FREE_ADDRESS_START;
 
 //
@@ -44,38 +42,42 @@ void switch_to(process* proc) {
   assert(proc);
   current = proc;
 
+  // write the smode_trap_vector (64-bit func. address) defined in kernel/strap_vector.S
+  // to the stvec privilege register, such that trap handler pointed by smode_trap_vector
+  // will be triggered when an interrupt occurs in S mode.
   write_csr(stvec, (uint64)smode_trap_vector);
-  // set up trapframe values that smode_trap_vector will need when
+
+  // set up trapframe values (in process structure) that smode_trap_vector will need when
   // the process next re-enters the kernel.
   proc->trapframe->kernel_sp = proc->kstack;      // process's kernel stack
   proc->trapframe->kernel_satp = read_csr(satp);  // kernel page table
   proc->trapframe->kernel_trap = (uint64)smode_trap_handler;
 
-  // set up the registers that strap_vector.S's sret will use
-  // to get to user space.
-
-  // set S Previous Privilege mode to User.
+  // SSTATUS_SPP and SSTATUS_SPIE are defined in kernel/riscv.h
+  // set S Previous Privilege mode (the SSTATUS_SPP bit in sstatus register) to User mode.
   unsigned long x = read_csr(sstatus);
   x &= ~SSTATUS_SPP;  // clear SPP to 0 for user mode
   x |= SSTATUS_SPIE;  // enable interrupts in user mode
 
+  // write x back to 'sstatus' register to enable interrupts, and sret destination mode.
   write_csr(sstatus, x);
 
-  // set S Exception Program Counter to the saved user pc.
+  // set S Exception Program Counter (sepc register) to the elf entry pc.
   write_csr(sepc, proc->trapframe->epc);
 
-  //make user page table
+  // make user page table. macro MAKE_SATP is defined in kernel/riscv.h. added @lab2_1
   uint64 user_satp = MAKE_SATP(proc->pagetable);
 
-  // switch to user mode with sret.
+  // return_to_user() is defined in kernel/strap_vector.S. switch to user mode with sret.
+  // note, return_to_user takes two parameters @ and after lab2_1.
   return_to_user(proc->trapframe, user_satp);
 }
 
 //
-// initialize process pool (the procs[] array)
+// initialize process pool (the procs[] array). added @lab3_1
 //
 void init_proc_pool() {
-  memset( procs, 0, sizeof(struct process)*NPROC );
+  memset( procs, 0, sizeof(process)*NPROC );
 
   for (int i = 0; i < NPROC; ++i) {
     procs[i].status = FREE;
@@ -84,7 +86,8 @@ void init_proc_pool() {
 }
 
 //
-// allocate an empty process, init its vm space. returns its pid
+// allocate an empty process, init its vm space. returns the pointer to
+// process strcuture. added @lab3_1
 //
 process* alloc_process() {
   // locate the first usable process structure
@@ -145,7 +148,7 @@ process* alloc_process() {
 }
 
 //
-// reclaim a process
+// reclaim a process. added @lab3_1
 //
 int free_process( process* proc ) {
   // we set the status to ZOMBIE, but cannot destruct its vm space immediately.
@@ -158,7 +161,7 @@ int free_process( process* proc ) {
 }
 
 //
-// implements fork syscal in kernel.
+// implements fork syscal in kernel. added @lab3_1
 // basic idea here is to first allocate an empty process (child), then duplicate the
 // context and data segments of parent process to the child, and lastly, map other
 // segments (code, system) of the parent to child. the stack segment remains unchanged
@@ -186,40 +189,22 @@ int do_fork( process* parent)
         // hint: the virtual address mapping of code segment is tracked in mapped_info
         // page of parent's process structure. use the information in mapped_info to
         // retrieve the virtual to physical mapping of code segment.
-        // after having the mapping information, just map the corresponding virtual 
+        // after having the mapping information, just map the corresponding virtual
         // address region of child to the physical pages that actually store the code
-        // segment of parent process. 
+        // segment of parent process.
         // DO NOT COPY THE PHYSICAL PAGES, JUST MAP THEM.
-        for( int j=0; j<parent->mapped_info[i].npages; j++ ){
-            uint64 addr = lookup_pa(parent->pagetable, parent->mapped_info[i].va+j*PGSIZE);
-
-            map_pages(child->pagetable, parent->mapped_info[i].va+j*PGSIZE, PGSIZE,
-                    addr, prot_to_type(PROT_WRITE | PROT_READ | PROT_EXEC, 1));
-
-            sprint( "do_fork map code segment at pa:%lx of parent to child at va:%lx.\n",
-                    addr, parent->mapped_info[i].va+j*PGSIZE );
+        // panic( "You need to implement the code segment mapping of child in lab3_1.\n" );
+        uint64 parent_pa = lookup_pa(parent->pagetable, parent->mapped_info[i].va);
+        if(parent_pa){
+        map_pages(child->pagetable, parent->mapped_info[i].va, PGSIZE, 
+                  parent_pa, prot_to_type(PROT_READ | PROT_EXEC, 1));
         }
 
         // after mapping, register the vm region (do not delete codes below!)
         child->mapped_info[child->total_mapped_region].va = parent->mapped_info[i].va;
-        child->mapped_info[child->total_mapped_region].npages = 
+        child->mapped_info[child->total_mapped_region].npages =
           parent->mapped_info[i].npages;
         child->mapped_info[child->total_mapped_region].seg_type = CODE_SEGMENT;
-        child->total_mapped_region++;
-        break;
-      case DATA_SEGMENT:
-        for( int j=0; j<parent->mapped_info[i].npages; j++ ){
-            uint64 addr = lookup_pa(parent->pagetable, parent->mapped_info[i].va+j*PGSIZE);
-            char *newaddr = alloc_page(); memcpy(newaddr, (void *)addr, PGSIZE);
-            map_pages(child->pagetable, parent->mapped_info[i].va+j*PGSIZE, PGSIZE,
-                    (uint64)newaddr, prot_to_type(PROT_WRITE | PROT_READ, 1));
-        }
-
-        // after mapping, register the vm region (do not delete codes below!)
-        child->mapped_info[child->total_mapped_region].va = parent->mapped_info[i].va;
-        child->mapped_info[child->total_mapped_region].npages = 
-          parent->mapped_info[i].npages;
-        child->mapped_info[child->total_mapped_region].seg_type = DATA_SEGMENT;
         child->total_mapped_region++;
         break;
     }
@@ -231,29 +216,4 @@ int do_fork( process* parent)
   insert_to_ready_queue( child );
 
   return child->pid;
-}
-
-// wait child process exit
-// pid == -1 means waiting for any child to exit
-// pid > 0 means waiting for the child whose pid
-// equal to the parameter to exit
-int wait(int pid) {
-    if (pid == -1) {
-        int f = 0;
-        for (int i = 0; i < NPROC; i++)
-            if (procs[i].parent == current) {
-                f = 1;
-                if (procs[i].status == ZOMBIE) {
-                    procs[i].status = FREE; return i;
-                }
-            }
-        if (f) return -2; else return -1;
-    } else if (pid < NPROC) {
-        if (procs[pid].parent != current) return -1;
-        else {
-            if (procs[pid].status == ZOMBIE) {
-                procs[pid].status = FREE; return pid;
-            } else  return -2;
-        }
-    } else return -1;
 }

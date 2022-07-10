@@ -3,7 +3,12 @@
 
 #include "riscv.h"
 
-typedef struct trapframe {
+typedef struct trapframe_t {
+  /*该结构记录:进程上下文的RISC-V机器的通用寄存器组 (regs成员);
+  指向内核态栈顶的kernel_sp;
+  指向内核态trap处理函数入口的kernel_trap指针;
+  进程执行的当前位置epc
+  */
   // space to store context (all common registers)
   /* offset:0   */ riscv_regs regs;
 
@@ -14,11 +19,11 @@ typedef struct trapframe {
   // saved user process counter
   /* offset:264 */ uint64 epc;
 
-  //kernel page table
+  // kernel page table. added @lab2_1
   /* offset:272 */ uint64 kernel_satp;
 }trapframe;
 
-// PKE kernel supports at most 32 processes
+// riscv-pke kernel supports at most 32 processes
 #define NPROC 32
 
 // possible status of a process
@@ -47,7 +52,7 @@ typedef struct mapped_region {
 } mapped_region;
 
 // the extremely simple definition of process, used for begining labs of PKE
-typedef struct process {
+typedef struct process_t {
   // pointing to the stack used in trap handling.
   uint64 kstack;
   // user page table
@@ -55,7 +60,7 @@ typedef struct process {
   // trapframe storing the context of a (User mode) process.
   trapframe* trapframe;
 
-  // points to a page that contains mapped_regions
+  // points to a page that contains mapped_regions. below are added @lab3_1
   mapped_region *mapped_info;
   // next free mapped region in mapped_info
   int total_mapped_region;
@@ -65,16 +70,25 @@ typedef struct process {
   // process status
   int status;
   // parent process
-  struct process *parent;
+  struct process_t *parent;
   // next queue element
-  struct process *queue_next;
+  struct process_t *queue_next;
 
-  // accounting
+  // accounting. added @lab3_3
   int tick_count;
 }process;
 
 // switch to run user app
 void switch_to(process*);
+
+// initialize process pool (the procs[] array)
+void init_proc_pool();
+// allocate an empty process, init its vm space. returns its pid
+process* alloc_process();
+// reclaim a process, destruct its vm space and free physical pages.
+int free_process( process* proc );
+// fork a child from parent
+int do_fork(process* parent);
 // initialize process pool (the procs[] array)
 void init_proc_pool();
 // allocate an empty process, init its vm space. returns its pid
@@ -86,7 +100,8 @@ int do_fork(process* parent);
 
 // current running process
 extern process* current;
-// virtual address of our simple heap
+
+// address of the first free page in our simple heap. added @lab2_2
 extern uint64 g_ufree_page;
 
 int wait(int);
