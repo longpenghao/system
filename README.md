@@ -1,2 +1,1 @@
-# system
-This is hlp's homework for system
+answer to PKE lab3 challenge1 (lab3_challenge1_wait branch).

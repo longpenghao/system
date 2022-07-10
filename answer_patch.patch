@@ -1,0 +1,132 @@
+diff --git a/kernel/process.c b/kernel/process.c
+index c514831..be232f2 100644
+--- a/kernel/process.c
++++ b/kernel/process.c
+@@ -207,6 +207,21 @@ int do_fork( process* parent)
+         child->mapped_info[child->total_mapped_region].seg_type = CODE_SEGMENT;
+         child->total_mapped_region++;
+         break;
++      case DATA_SEGMENT:
++        for( int j=0; j<parent->mapped_info[i].npages; j++ ){
++            uint64 addr = lookup_pa(parent->pagetable, parent->mapped_info[i].va+j*PGSIZE);
++            char *newaddr = alloc_page(); memcpy(newaddr, (void *)addr, PGSIZE);
++            map_pages(child->pagetable, parent->mapped_info[i].va+j*PGSIZE, PGSIZE,
++                    (uint64)newaddr, prot_to_type(PROT_WRITE | PROT_READ, 1));
++        }
++
++        // after mapping, register the vm region (do not delete codes below!)
++        child->mapped_info[child->total_mapped_region].va = parent->mapped_info[i].va;
++        child->mapped_info[child->total_mapped_region].npages = 
++          parent->mapped_info[i].npages;
++        child->mapped_info[child->total_mapped_region].seg_type = DATA_SEGMENT;
++        child->total_mapped_region++;
++        break;
+     }
+   }
+ 
+@@ -217,3 +232,28 @@ int do_fork( process* parent)
+ 
+   return child->pid;
+ }
++
++// wait child process exit
++// pid == -1 means waiting for any child to exit
++// pid > 0 means waiting for the child whose pid
++// equal to the parameter to exit
++int wait(int pid) {
++    if (pid == -1) {
++        int f = 0;
++        for (int i = 0; i < NPROC; i++)
++            if (procs[i].parent == current) {
++                f = 1;
++                if (procs[i].status == ZOMBIE) {
++                    procs[i].status = FREE; return i;
++                }
++            }
++        if (f) return -2; else return -1;
++    } else if (pid < NPROC) {
++        if (procs[pid].parent != current) return -1;
++        else {
++            if (procs[pid].status == ZOMBIE) {
++                procs[pid].status = FREE; return pid;
++            } else  return -2;
++        }
++    } else return -1;
++}
+diff --git a/kernel/process.h b/kernel/process.h
+index 620db06..b5e3ebd 100644
+--- a/kernel/process.h
++++ b/kernel/process.h
+@@ -89,4 +89,6 @@ extern process* current;
+ // virtual address of our simple heap
+ extern uint64 g_ufree_page;
+ 
++int wait(int);
++
+ #endif
+diff --git a/kernel/syscall.c b/kernel/syscall.c
+index 4cb60d8..fabbb26 100644
+--- a/kernel/syscall.c
++++ b/kernel/syscall.c
+@@ -83,6 +83,13 @@ ssize_t sys_user_yield() {
+   return 0;
+ }
+ 
++//
++// kerenl entry point of wait
++//
++ssize_t sys_user_wait(long pid) {
++    return wait(pid);
++}
++
+ //
+ // [a0]: the syscall number; [a1] ... [a7]: arguments to the syscalls.
+ // returns the code of success, (e.g., 0 means success, fail for otherwise)
+@@ -101,6 +108,8 @@ long do_syscall(long a0, long a1, long a2, long a3, long a4, long a5, long a6, l
+       return sys_user_fork();
+     case SYS_user_yield:
+       return sys_user_yield();
++    case SYS_user_wait:
++      return sys_user_wait(a1);
+     default:
+       panic("Unknown syscall %ld \n", a0);
+   }
+diff --git a/kernel/syscall.h b/kernel/syscall.h
+index e4e02fe..8647d1e 100644
+--- a/kernel/syscall.h
++++ b/kernel/syscall.h
+@@ -12,6 +12,7 @@
+ #define SYS_user_free_page (SYS_user_base + 3)
+ #define SYS_user_fork (SYS_user_base + 4)
+ #define SYS_user_yield (SYS_user_base + 5)
++#define SYS_user_wait (SYS_user_base + 6)
+ 
+ long do_syscall(long a0, long a1, long a2, long a3, long a4, long a5, long a6, long a7);
+ 
+diff --git a/user/user_lib.c b/user/user_lib.c
+index 3fcb85d..ac384b1 100644
+--- a/user/user_lib.c
++++ b/user/user_lib.c
+@@ -76,3 +76,13 @@ int fork() {
+ void yield() {
+   do_user_call(SYS_user_yield, 0, 0, 0, 0, 0, 0, 0);
+ }
++
++//
++// lib call to wait
++//
++int wait(int pid) {
++    for (;;) {
++        int r = do_user_call(SYS_user_wait, pid, 0, 0, 0, 0, 0, 0);
++        if (r != -2) return r; else yield();
++    }
++}
+diff --git a/user/user_lib.h b/user/user_lib.h
+index 63e2e25..020f92b 100644
+--- a/user/user_lib.h
++++ b/user/user_lib.h
+@@ -8,3 +8,4 @@ void* naive_malloc();
+ void naive_free(void* va);
+ int fork();
+ void yield();
++int wait(int);
